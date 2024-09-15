@@ -3,6 +3,11 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from config import Config
 from datetime import datetime
+from dotenv import load_dotenv
+import os
+
+# .env-Datei laden
+load_dotenv()
 
 # Flask-Anwendung initialisieren
 app = Flask(__name__)
