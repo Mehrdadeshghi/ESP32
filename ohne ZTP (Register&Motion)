@@ -1,0 +1,147 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiManager.h>
+#include <ArduinoJson.h>
+
+// Your WiFi credentials
+const char* ssid = "Eshghi";       
+const char* password = "SabziPolo";
+
+// Server URLs
+const char* registrationServerUrl = "http://45.195.250.247:3000/api/register";
+const char* motionServerUrl = "http://45.195.250.247:3000/api/motion";
+
+// GPIO pins
+const int pirSensorPin = 13;   // PIR sensor pin
+const int ledPin = 2;          // LED pin (on-board)
+
+// Variable to track device registration
+bool isRegistered = false;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize pins
+  pinMode(pirSensorPin, INPUT);
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW); // LED off initially
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi...");
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println(" Connected to WiFi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Register the device after successful WiFi connection
+  registerDevice();
+}
+
+void loop() {
+  if (!isRegistered) {
+    // Retry device registration if it's not yet registered
+    registerDevice();
+  } else {
+    // Monitor for motion detection
+    int pirStatus = digitalRead(pirSensorPin);
+    if (pirStatus == HIGH) {
+      Serial.println("Motion detected!");
+      sendMotionEvent();  // Send the motion event to the server
+
+      // Blink LED as a visual indication of motion detection
+      digitalWrite(ledPin, HIGH);
+      delay(5000);  // Wait 5 seconds to avoid repeated triggers
+      digitalWrite(ledPin, LOW);
+    }
+  }
+
+  delay(100);  // Small delay to reduce CPU load
+}
+
+// Function to register the device
+void registerDevice() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(registrationServerUrl);  // URL for device registration
+    http.addHeader("Content-Type", "application/json");
+
+    // Create JSON payload for registration
+    DynamicJsonDocument doc(256);
+    doc["mac_address"] = WiFi.macAddress();
+    doc["firmware_version"] = "1.0.0";  // Change this if necessary
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    // Send HTTP POST request for registration
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println("Server response:");
+      Serial.println(response);
+
+      // Parse the JSON response from the server
+      DynamicJsonDocument responseDoc(256);
+      DeserializationError error = deserializeJson(responseDoc, response);
+
+      if (!error) {
+        bool success = responseDoc["success"];
+        if (success) {
+          Serial.println("Device successfully registered.");
+          isRegistered = true;
+        } else {
+          Serial.println("Device registration failed.");
+        }
+      } else {
+        Serial.print("Error parsing server response: ");
+        Serial.println(error.c_str());
+      }
+    } else {
+      Serial.print("HTTP request failed with code: ");
+      Serial.println(httpResponseCode);
+    }
+
+    http.end();  // Close connection
+  } else {
+    Serial.println("Not connected to WiFi.");
+  }
+}
+
+// Function to send motion detection event
+void sendMotionEvent() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(motionServerUrl);  // URL for motion event
+    http.addHeader("Content-Type", "application/json");
+
+    // Create JSON payload for motion event
+    DynamicJsonDocument doc(256);
+    doc["mac_address"] = WiFi.macAddress();
+    doc["timestamp"] = millis();  // Use millis() as a simple timestamp
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    // Send HTTP POST request for motion event
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.println("Motion event sent. Server response:");
+      Serial.println(response);
+    } else {
+      Serial.print("Failed to send motion event. HTTP response code: ");
+      Serial.println(httpResponseCode);
+    }
+
+    http.end();  // Close connection
+  } else {
+    Serial.println("Not connected to WiFi.");
+  }
+}
