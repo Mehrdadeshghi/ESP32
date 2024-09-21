@@ -1,12 +1,16 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const mysql = require('mysql');
+const path = require('path');
 
 // Initialize the Express app
 const app = express();
 
 // Middleware to parse incoming JSON requests
 app.use(bodyParser.json());
+
+// Serve static files (e.g., HTML, CSS, JS)
+app.use(express.static(path.join(__dirname, 'public')));
 
 // MySQL Database Connection
 const db = mysql.createConnection({
@@ -27,21 +31,37 @@ db.connect((err) => {
 // Endpoint for device registration
 app.post('/api/register', (req, res) => {
   const { mac_address, firmware_version } = req.body;
-  const sql = 'INSERT INTO devices (mac_address, firmware_version) VALUES (?, ?) ON DUPLICATE KEY UPDATE firmware_version=?';
+  const sqlDevices = 'INSERT INTO devices (mac_address, firmware_version) VALUES (?, ?) ON DUPLICATE KEY UPDATE firmware_version=?';
 
-  db.query(sql, [mac_address, firmware_version, firmware_version], (err, result) => {
+  db.query(sqlDevices, [mac_address, firmware_version, firmware_version], (err, result) => {
     if (err) {
       console.error('Error registering device:', err);
       return res.status(500).json({ success: false, message: 'Error registering device' });
     }
+
     console.log(`Device registered: ${mac_address}`);
-    res.json({ success: true, message: 'Device registered successfully' });
+
+    // Insert the device into the esp_verwaltung table if it's not already there
+    const sqlVerwaltung = 'INSERT INTO esp_verwaltung (esp_mac_address) VALUES (?) ON DUPLICATE KEY UPDATE esp_mac_address=esp_mac_address';
+    db.query(sqlVerwaltung, [mac_address], (err2, result2) => {
+      if (err2) {
+        console.error('Error adding device to esp_verwaltung:', err2);
+        return res.status(500).json({ success: false, message: 'Error adding device to esp_verwaltung' });
+      }
+      res.json({ success: true, message: 'Device registered and added to esp_verwaltung successfully' });
+    });
   });
 });
+
 
 // Endpoint for logging motion events
 app.post('/api/motion', (req, res) => {
   const { mac_address, timestamp } = req.body;
+  
+  if (!mac_address || !timestamp) {
+    return res.status(400).json({ success: false, message: 'Missing required fields' });
+  }
+
   const sql = 'INSERT INTO motion_events (mac_address, timestamp) VALUES (?, ?)';
 
   db.query(sql, [mac_address, timestamp], (err, result) => {
@@ -54,8 +74,153 @@ app.post('/api/motion', (req, res) => {
   });
 });
 
+
+// Endpoint for creating a new location (Standort)
+app.post('/api/standorte', (req, res) => {
+  const { vorname, nachname, strasse, hausnummer, plz, stadt, raum, note } = req.body;
+  const sql = 'INSERT INTO standorte (vorname, nachname, strasse, hausnummer, plz, stadt, raum, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
+  
+  db.query(sql, [vorname, nachname, strasse, hausnummer, plz, stadt, raum, note], (err, result) => {
+    if (err) {
+      console.error('Error creating location:', err);
+      return res.status(500).json({ success: false, message: 'Error creating location' });
+    }
+    res.json({ success: true, message: 'Location created successfully', location_id: result.insertId });
+  });
+});
+
+// Endpoint for assigning an ESP to a location
+app.post('/api/esp-verwalten', (req, res) => {
+  const { esp_mac_address, standort_id } = req.body;
+  const sql = 'INSERT INTO esp_verwaltung (esp_mac_address, standort_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE standort_id=?';
+  
+  db.query(sql, [esp_mac_address, standort_id, standort_id], (err, result) => {
+    if (err) {
+      console.error('Error assigning ESP to location:', err);
+      return res.status(500).json({ success: false, message: 'Error assigning ESP to location' });
+    }
+    res.json({ success: true, message: 'ESP assigned to location successfully' });
+  });
+});
+
+// Endpoint to fetch the list of ESP devices and their assigned locations
+app.get('/api/esp-liste', (req, res) => {
+  const sql = `
+    SELECT d.mac_address, 
+           COALESCE(s.vorname, '') AS vorname, 
+           COALESCE(s.nachname, '') AS nachname, 
+           COALESCE(s.strasse, 'unbekannt') AS strasse, 
+           COALESCE(s.hausnummer, '') AS hausnummer, 
+           COALESCE(s.plz, '') AS plz, 
+           COALESCE(s.stadt, 'unbekannt') AS stadt, 
+           COALESCE(s.raum, 'kein Raum') AS raum, 
+           COALESCE(s.note, '') AS note
+    FROM devices d
+    LEFT JOIN esp_verwaltung e ON d.mac_address = e.esp_mac_address
+    LEFT JOIN standorte s ON e.standort_id = s.id
+  `;
+  
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('Error fetching ESP list:', err);
+      return res.status(500).json({ success: false, message: 'Error fetching ESP list' });
+    }
+    res.json({ success: true, devices: results });
+  });
+});
+
+// MAC-Adressen laden
+function loadMACAddresses() {
+  fetch('/api/macs')
+    .then(response => response.json())
+    .then(data => {
+      const macSelect = document.querySelector('#esp_mac');
+      macSelect.innerHTML = '';
+      data.macs.forEach(mac => {
+        const option = document.createElement('option');
+        option.value = mac.mac_address;
+        option.textContent = mac.mac_address;
+        macSelect.appendChild(option);
+      });
+    });
+}
+
+// Standorte laden
+function loadLocations() {
+  fetch('/api/standorte')
+    .then(response => response.json())
+    .then(data => {
+      const standortSelect = document.querySelector('#standort_id');
+      standortSelect.innerHTML = '';
+      data.locations.forEach(location => {
+        const option = document.createElement('option');
+        option.value = location.id;
+        option.textContent = `${location.vorname} ${location.nachname}, ${location.stadt}`;
+        standortSelect.appendChild(option);
+      });
+    });
+}
+
+// ESP einem Standort zuweisen
+function assignLocation() {
+  const macAddress = document.querySelector('#esp_mac').value;
+  const standortId = document.querySelector('#standort_id').value;
+
+  fetch('/api/esp-verwalten', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ esp_mac_address: macAddress, standort_id: standortId })
+  })
+  .then(response => response.json())
+  .then(data => {
+    alert(data.message);
+    loadESPDevices(); // Refresh list
+  });
+}
+
+// Seite initialisieren
+window.onload = () => {
+  loadMACAddresses();
+  loadLocations();
+  loadESPDevices();
+};
+
+
+
+
+// Endpoint to fetch the list of locations (Standorte)
+// Endpoint to fetch the list of locations (Standorte)
+app.get('/api/standorte', (req, res) => {
+  const sql = 'SELECT * FROM standorte';
+  
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('Error fetching locations:', err);
+      return res.status(500).json({ success: false, message: 'Error fetching locations' });
+    }
+    res.json({ success: true, locations: results });
+  });
+});
+
+
 // Start the server
 const port = 3000;
 app.listen(port, '0.0.0.0', () => {
-  console.log(`Server running on http://45.195.250.247:${port}`);
+  console.log(`Server running on http://localhost:${port}`);
 });
+
+// Endpoint to fetch all known MAC addresses from the devices table
+app.get('/api/macs', (req, res) => {
+  const sql = 'SELECT mac_address FROM devices';
+  
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('Error fetching MAC addresses:', err);
+      return res.status(500).json({ success: false, message: 'Error fetching MAC addresses' });
+    }
+    res.json({ success: true, macs: results });
+  });
+});
+
+
+
