@@ -53,7 +53,6 @@ app.post('/api/register', (req, res) => {
   });
 });
 
-
 // Endpoint for logging motion events
 app.post('/api/motion', (req, res) => {
   const { mac_address, timestamp } = req.body;
@@ -74,36 +73,59 @@ app.post('/api/motion', (req, res) => {
   });
 });
 
+// Endpoint to remove the location assignment from an ESP32 device
+app.post('/api/remove-location', (req, res) => {
+  const { esp_mac_address } = req.body;
 
-// Endpoint for creating a new location (Standort)
-app.post('/api/standorte', (req, res) => {
-  const { vorname, nachname, strasse, hausnummer, plz, stadt, raum, note } = req.body;
-  const sql = 'INSERT INTO standorte (vorname, nachname, strasse, hausnummer, plz, stadt, raum, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
-  
-  db.query(sql, [vorname, nachname, strasse, hausnummer, plz, stadt, raum, note], (err, result) => {
+  const sql = 'UPDATE esp_verwaltung SET standort_id = NULL WHERE esp_mac_address = ?';
+
+  db.query(sql, [esp_mac_address], (err, result) => {
     if (err) {
-      console.error('Error creating location:', err);
-      return res.status(500).json({ success: false, message: 'Error creating location' });
+      console.error('Error removing location from ESP32:', err);
+      return res.status(500).json({ success: false, message: 'Error removing location' });
     }
-    res.json({ success: true, message: 'Location created successfully', location_id: result.insertId });
+    res.json({ success: true, message: 'Location removed from ESP32 successfully' });
   });
 });
 
-// Endpoint for assigning an ESP to a location
-app.post('/api/esp-verwalten', (req, res) => {
-  const { esp_mac_address, standort_id } = req.body;
-  const sql = 'INSERT INTO esp_verwaltung (esp_mac_address, standort_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE standort_id=?';
-  
-  db.query(sql, [esp_mac_address, standort_id, standort_id], (err, result) => {
+// Endpoint to delete an ESP32 device completely
+app.post('/api/delete-esp', (req, res) => {
+  const { esp_mac_address } = req.body;
+
+  const sqlDeleteDevice = 'DELETE FROM devices WHERE mac_address = ?';
+  const sqlDeleteVerwaltung = 'DELETE FROM esp_verwaltung WHERE esp_mac_address = ?';
+
+  // Delete from both tables (devices and esp_verwaltung)
+  db.query(sqlDeleteDevice, [esp_mac_address], (err, result) => {
     if (err) {
-      console.error('Error assigning ESP to location:', err);
-      return res.status(500).json({ success: false, message: 'Error assigning ESP to location' });
+      console.error('Error deleting ESP32 from devices:', err);
+      return res.status(500).json({ success: false, message: 'Error deleting device' });
     }
-    res.json({ success: true, message: 'ESP assigned to location successfully' });
+
+    db.query(sqlDeleteVerwaltung, [esp_mac_address], (err2, result2) => {
+      if (err2) {
+        console.error('Error deleting ESP32 from esp_verwaltung:', err2);
+        return res.status(500).json({ success: false, message: 'Error deleting from esp_verwaltung' });
+      }
+      res.json({ success: true, message: 'ESP32 deleted successfully' });
+    });
   });
 });
 
-// Endpoint to fetch the list of ESP devices and their assigned locations
+// Endpoint to fetch the list of locations (Standorte)
+app.get('/api/standorte', (req, res) => {
+  const sql = 'SELECT * FROM standorte';
+  
+  db.query(sql, (err, results) => {
+    if (err) {
+      console.error('Error fetching locations:', err);
+      return res.status(500).json({ success: false, message: 'Error fetching locations' });
+    }
+    res.json({ success: true, locations: results });
+  });
+});
+
+// Endpoint to fetch the list of ESP devices from the devices and esp_verwaltung tables
 app.get('/api/esp-liste', (req, res) => {
   const sql = `
     SELECT d.mac_address, 
@@ -129,86 +151,6 @@ app.get('/api/esp-liste', (req, res) => {
   });
 });
 
-// MAC-Adressen laden
-function loadMACAddresses() {
-  fetch('/api/macs')
-    .then(response => response.json())
-    .then(data => {
-      const macSelect = document.querySelector('#esp_mac');
-      macSelect.innerHTML = '';
-      data.macs.forEach(mac => {
-        const option = document.createElement('option');
-        option.value = mac.mac_address;
-        option.textContent = mac.mac_address;
-        macSelect.appendChild(option);
-      });
-    });
-}
-
-// Standorte laden
-function loadLocations() {
-  fetch('/api/standorte')
-    .then(response => response.json())
-    .then(data => {
-      const standortSelect = document.querySelector('#standort_id');
-      standortSelect.innerHTML = '';
-      data.locations.forEach(location => {
-        const option = document.createElement('option');
-        option.value = location.id;
-        option.textContent = `${location.vorname} ${location.nachname}, ${location.stadt}`;
-        standortSelect.appendChild(option);
-      });
-    });
-}
-
-// ESP einem Standort zuweisen
-function assignLocation() {
-  const macAddress = document.querySelector('#esp_mac').value;
-  const standortId = document.querySelector('#standort_id').value;
-
-  fetch('/api/esp-verwalten', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ esp_mac_address: macAddress, standort_id: standortId })
-  })
-  .then(response => response.json())
-  .then(data => {
-    alert(data.message);
-    loadESPDevices(); // Refresh list
-  });
-}
-
-// Seite initialisieren
-window.onload = () => {
-  loadMACAddresses();
-  loadLocations();
-  loadESPDevices();
-};
-
-
-
-
-// Endpoint to fetch the list of locations (Standorte)
-// Endpoint to fetch the list of locations (Standorte)
-app.get('/api/standorte', (req, res) => {
-  const sql = 'SELECT * FROM standorte';
-  
-  db.query(sql, (err, results) => {
-    if (err) {
-      console.error('Error fetching locations:', err);
-      return res.status(500).json({ success: false, message: 'Error fetching locations' });
-    }
-    res.json({ success: true, locations: results });
-  });
-});
-
-
-// Start the server
-const port = 3000;
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Server running on http://localhost:${port}`);
-});
-
 // Endpoint to fetch all known MAC addresses from the devices table
 app.get('/api/macs', (req, res) => {
   const sql = 'SELECT mac_address FROM devices';
@@ -222,5 +164,21 @@ app.get('/api/macs', (req, res) => {
   });
 });
 
+// Serve the GUI HTML files
+app.get('/overview', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'overview.html'));
+});
 
+app.get('/management', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'management.html'));
+});
 
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Start the server
+const port = 3000;
+app.listen(port, '0.0.0.0', () => {
+  console.log(`Server running on http://localhost:${port}`);
+});
