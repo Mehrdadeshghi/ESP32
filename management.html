@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Management</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    input, select, button { padding: 10px; margin: 5px; }
+  </style>
+</head>
+<body>
+
+  <h1>ESP32 Management</h1>
+
+  <!-- Dropdown zur Auswahl der ESP MAC-Adresse -->
+  <label for="esp_mac">ESP MAC-Adresse auswählen:</label>
+  <select id="esp_mac">
+    <!-- Dynamisch geladene MAC-Adressen -->
+  </select>
+
+  <br><br>
+
+  <!-- Button zum Standortentzug -->
+  <button onclick="removeLocation()">Standort entfernen</button>
+
+  <!-- Button zum Löschen des ESP32 -->
+  <button onclick="deleteESP()">ESP32 löschen</button>
+
+  <script>
+    // MAC-Adressen laden
+    function loadMACAddresses() {
+      fetch('/api/macs')
+        .then(response => response.json())
+        .then(data => {
+          const macSelect = document.querySelector('#esp_mac');
+          macSelect.innerHTML = '';
+          data.macs.forEach(mac => {
+            const option = document.createElement('option');
+            option.value = mac.mac_address;
+            option.textContent = mac.mac_address;
+            macSelect.appendChild(option);
+          });
+        });
+    }
+
+    // Standort entfernen
+    function removeLocation() {
+      const macAddress = document.querySelector('#esp_mac').value;
+      fetch('/api/remove-location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ esp_mac_address: macAddress })
+      })
+      .then(response => response.json())
+      .then(data => {
+        alert(data.message);
+        loadMACAddresses();  // Aktualisiere die MAC-Liste
+      });
+    }
+
+    // ESP32 löschen
+    function deleteESP() {
+      const macAddress = document.querySelector('#esp_mac').value;
+      fetch('/api/delete-esp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ esp_mac_address: macAddress })
+      })
+      .then(response => response.json())
+      .then(data => {
+        alert(data.message);
+        loadMACAddresses();  // Aktualisiere die MAC-Liste
+      });
+    }
+
+    // Seite initialisieren
+    window.onload = () => {
+      loadMACAddresses();
+    };
+  </script>
+
+</body>
+</html>
