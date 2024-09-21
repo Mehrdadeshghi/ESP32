@@ -120,10 +120,9 @@ void sendMotionEvent() {
     http.begin(motionServerUrl);  // URL for motion event
     http.addHeader("Content-Type", "application/json");
 
-    // Create JSON payload for motion event
+    // Create JSON payload for motion event (only send MAC address, server will generate timestamp)
     DynamicJsonDocument doc(256);
-    doc["mac_address"] = WiFi.macAddress();
-    doc["timestamp"] = millis();  // Use millis() as a simple timestamp
+    doc["mac_address"] = WiFi.macAddress();  // Send MAC address only
 
     String requestBody;
     serializeJson(doc, requestBody);
