@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Übersicht</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+    table, th, td { border: 1px solid black; }
+    th, td { padding: 10px; text-align: left; }
+  </style>
+</head>
+<body>
+
+  <h1>ESP32 Übersicht</h1>
+  <table id="overviewTable">
+    <thead>
+      <tr>
+        <th>ESP MAC-Adresse</th>
+        <th>Standort</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- Geräte werden hier dynamisch hinzugefügt -->
+    </tbody>
+  </table>
+
+  <script>
+    function loadESPOverview() {
+      fetch('/api/esp-liste')
+        .then(response => response.json())
+        .then(data => {
+          const tableBody = document.querySelector('#overviewTable tbody');
+          tableBody.innerHTML = '';
+          data.devices.forEach(device => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+              <td>${device.mac_address}</td>
+              <td>${device.vorname ? `${device.vorname} ${device.nachname}, ${device.strasse} ${device.hausnummer}, ${device.plz} ${device.stadt}, Raum: ${device.raum}` : 'Kein Standort zugewiesen'}</td>
+              <td>${device.vorname ? 'Standort zugewiesen' : 'Kein Standort zugewiesen'}</td>
+            `;
+            tableBody.appendChild(row);
+          });
+        });
+    }
+
+    // Seite initialisieren
+    window.onload = () => {
+      loadESPOverview();
+    };
+  </script>
+
+</body>
+</html>
