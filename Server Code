@@ -164,6 +164,25 @@ app.get('/api/macs', (req, res) => {
   });
 });
 
+// Endpoint to fetch motion events for a specific ESP32 device
+app.get('/api/motions', (req, res) => {
+  const { mac_address } = req.query;
+
+  if (!mac_address) {
+    return res.status(400).json({ success: false, message: 'MAC address is required' });
+  }
+
+  const sql = 'SELECT * FROM motion_events WHERE mac_address = ? ORDER BY timestamp DESC';
+
+  db.query(sql, [mac_address], (err, results) => {
+    if (err) {
+      console.error('Error fetching motion events:', err);
+      return res.status(500).json({ success: false, message: 'Error fetching motion events' });
+    }
+    res.json({ success: true, motionEvents: results });
+  });
+});
+
 // Serve the GUI HTML files
 app.get('/overview', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'overview.html'));
@@ -171,6 +190,10 @@ app.get('/overview', (req, res) => {
 
 app.get('/management', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'management.html'));
+});
+
+app.get('/motion', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'motion.html'));
 });
 
 app.get('/', (req, res) => {
