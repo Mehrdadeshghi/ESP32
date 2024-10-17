@@ -1,0 +1,231 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiManager.h>
+#include <ArduinoJson.h>
+
+// Ihre WLAN-Zugangsdaten
+const char* ssid = "Eshghi2,4";
+const char* password = "SabziPolo";
+
+// Server-URLs
+const char* registrationServerUrl = "http://45.195.250.247:5000/api/register";
+const char* motionServerUrl = "http://45.195.250.247:5000/api/motion";
+const char* systemInfoUrl = "http://45.195.250.247:5000/api/system-info";
+
+
+// GPIO-Pins
+const int pirSensorPin = 13;   // PIR-Sensor-Pin
+const int ledPin = 2;          // LED-Pin (On-Board)
+
+// Variablen zur Statusverfolgung
+bool isRegistered = false;
+bool wifiConnected = false;
+
+void setup() {
+  Serial.begin(115200);
+
+  // Initialisieren der Pins
+  pinMode(pirSensorPin, INPUT);
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW); // LED initial aus
+
+  // Verbindung mit WLAN herstellen
+  connectToWiFi();
+
+  // Gerät registrieren nach erfolgreicher WLAN-Verbindung
+  if (wifiConnected) {
+    registerDevice();
+  }
+}
+
+void loop() {
+  // WLAN-Verbindung überprüfen und bei Bedarf erneut verbinden
+  if (WiFi.status() != WL_CONNECTED) {
+    wifiConnected = false;
+    Serial.println("WLAN-Verbindung verloren. Versuche, erneut zu verbinden...");
+    connectToWiFi();
+    // Gerät nach Wiederverbindung erneut registrieren
+    if (wifiConnected && !isRegistered) {
+      registerDevice();
+    }
+  } else {
+    wifiConnected = true;
+  }
+
+  if (!isRegistered && wifiConnected) {
+    // Registrierung erneut versuchen, wenn noch nicht registriert
+    registerDevice();
+  } else if (isRegistered && wifiConnected) {
+    // Überwachung der Bewegungserkennung
+    int pirStatus = digitalRead(pirSensorPin);
+    if (pirStatus == HIGH) {
+      Serial.println("Bewegung erkannt!");
+      sendMotionEvent();  // Sende Bewegungsevent an den Server
+
+      // LED blinken als visuelle Anzeige der Bewegungserkennung
+      digitalWrite(ledPin, HIGH);
+      delay(5000);  // 5 Sekunden warten, um wiederholte Auslösungen zu vermeiden
+      digitalWrite(ledPin, LOW);
+    }
+
+    // Systeminformationen periodisch senden (alle Minute)
+    static unsigned long lastSystemInfoSent = 0;
+    if (millis() - lastSystemInfoSent >= 60000) {  // Alle 60 Sekunden senden
+      sendSystemInfo();
+      lastSystemInfoSent = millis();
+    }
+  }
+
+  delay(100);  // Kleine Verzögerung zur Reduzierung der CPU-Last
+}
+
+// Funktion zur Verbindung mit WLAN
+void connectToWiFi() {
+  WiFi.begin(ssid, password);
+  Serial.print("Verbinde mit WLAN...");
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) { // 30 Sekunden versuchen
+    delay(1000);
+    Serial.print(".");
+    attempts++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" Verbunden mit WLAN");
+    Serial.print("IP-Adresse: ");
+    Serial.println(WiFi.localIP());
+    wifiConnected = true;
+  } else {
+    Serial.println(" Konnte keine Verbindung zu WLAN herstellen");
+    wifiConnected = false;
+  }
+}
+
+// Funktion zur Registrierung des Geräts
+void registerDevice() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(registrationServerUrl);  // URL für die Geräte-Registrierung
+    http.addHeader("Content-Type", "application/json");
+
+    // Erstellen der JSON-Payload für die Registrierung
+    DynamicJsonDocument doc(256);
+    doc["mac_address"] = WiFi.macAddress();
+    doc["firmware_version"] = "1.0.0";  // Bei Bedarf anpassen
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    // Senden der HTTP-POST-Anfrage für die Registrierung
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.println("Serverantwort:");
+      Serial.println(response);
+
+      // Parsen der JSON-Antwort vom Server
+      DynamicJsonDocument responseDoc(256);
+      DeserializationError error = deserializeJson(responseDoc, response);
+
+      if (!error) {
+        bool success = responseDoc["success"];
+        if (success) {
+          Serial.println("Gerät erfolgreich registriert.");
+          isRegistered = true;
+        } else {
+          Serial.println("Geräte-Registrierung fehlgeschlagen.");
+        }
+      } else {
+        Serial.print("Fehler beim Parsen der Serverantwort: ");
+        Serial.println(error.c_str());
+      }
+    } else {
+      Serial.print("HTTP-Anfrage fehlgeschlagen mit Code: ");
+      Serial.println(httpResponseCode);
+      Serial.printf("Fehlerdetails: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    http.end();  // Verbindung schließen
+  } else {
+    Serial.println("Nicht mit WLAN verbunden.");
+  }
+}
+
+// Funktion zum Senden des Bewegungserkennungs-Events
+void sendMotionEvent() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(motionServerUrl);  // URL für Bewegungsevent
+    http.addHeader("Content-Type", "application/json");
+
+    // Erstellen der JSON-Payload für Bewegungsevent
+    DynamicJsonDocument doc(256);
+    doc["mac_address"] = WiFi.macAddress();  // Erforderliche MAC-Adresse
+    doc["timestamp"] = millis();  // Alternativ einen genaueren Zeitstempel verwenden
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    // Senden der HTTP-POST-Anfrage für Bewegungsevent
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.println("Bewegungsevent gesendet. Serverantwort:");
+      Serial.println(response);
+    } else {
+      Serial.print("Fehler beim Senden des Bewegungsevents. HTTP-Antwortcode: ");
+      Serial.println(httpResponseCode);
+      Serial.printf("Fehlerdetails: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    http.end();  // Verbindung schließen
+  } else {
+    Serial.println("Nicht mit WLAN verbunden.");
+  }
+}
+
+// Funktion zum Senden der Systeminformationen
+void sendSystemInfo() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(systemInfoUrl);  // URL für Systeminformationen
+    http.addHeader("Content-Type", "application/json");
+
+    // Sammeln der Systeminformationen
+    String macAddress = WiFi.macAddress();
+    String publicIP = WiFi.localIP().toString();
+    int wifiStrength = WiFi.RSSI();  // WLAN-Signalstärke
+    String firmwareVersion = "1.0.0";  // Firmware-Version
+    unsigned long uptime = millis() / 1000;  // Betriebszeit in Sekunden
+
+    // Erstellen der JSON-Payload
+    DynamicJsonDocument doc(256);
+    doc["mac_address"] = macAddress;
+    doc["public_ip"] = publicIP;
+    doc["wifi_strength"] = wifiStrength;
+    doc["serial_number"] = "SN123456";  // Bei Bedarf anpassen
+    doc["uptime"] = uptime;
+    doc["firmware_version"] = firmwareVersion;
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    // Senden der HTTP-POST-Anfrage für Systeminformationen
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.println("Systeminformationen gesendet. Serverantwort:");
+      Serial.println(response);
+    } else {
+      Serial.print("Fehler beim Senden der Systeminformationen. HTTP-Antwortcode: ");
+      Serial.println(httpResponseCode);
+      Serial.printf("Fehlerdetails: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    http.end();  // Verbindung schließen
+  } else {
+    Serial.println("Nicht mit WLAN verbunden.");
+  }
+}
