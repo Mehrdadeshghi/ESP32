@@ -1,0 +1,138 @@
+from flask import Flask, request, jsonify
+import mysql.connector
+from datetime import datetime, timedelta
+
+# Initialize the Flask app
+app = Flask(__name__)
+
+# MySQL Database Connection
+db = mysql.connector.connect(
+    host="localhost",
+    user="esp_user",            # Verwenden Sie Ihren MySQL-Benutzernamen
+    password="esp_password",    # Verwenden Sie Ihr MySQL-Passwort
+    database="esp_data"         # Die Datenbank zum Speichern der Gerätedaten
+)
+
+# Endpoint für die Geräte-Registrierung
+@app.route('/api/register', methods=['POST'])
+def register_device():
+    data = request.get_json()
+    mac_address = data.get('mac_address')
+    firmware_version = data.get('firmware_version')
+
+    if not mac_address or not firmware_version:
+        return jsonify({"success": False, "message": "Missing required fields"}), 400
+
+    cursor = db.cursor()
+    sql_devices = """
+        INSERT INTO devices (mac_address, firmware_version)
+        VALUES (%s, %s)
+        ON DUPLICATE KEY UPDATE firmware_version = %s
+    """
+    try:
+        cursor.execute(sql_devices, (mac_address, firmware_version, firmware_version))
+        db.commit()
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "message": f"Error registering device: {err}"}), 500
+
+    return jsonify({"success": True, "message": "Device registered successfully"})
+
+# Endpoint zum Protokollieren von Bewegungsevents
+@app.route('/api/motion', methods=['POST'])
+def log_motion_event():
+    data = request.get_json()
+    app.logger.debug(f"Received motion data: {data}")
+    mac_address = data.get('mac_address')
+    timestamp = data.get('timestamp')
+
+    if not mac_address or not timestamp:
+        return jsonify({"success": False, "message": "Missing required fields"}), 400
+
+    # Umwandlung des Zeitstempels in datetime und Hinzufügen von 1 Stunde
+    try:
+        # Zeitstempel in UTC datetime
+        utc_dt = datetime.utcfromtimestamp(int(timestamp))
+        # Hinzufügen von 1 Stunde
+        adjusted_dt = utc_dt + timedelta(hours=1)
+        event_date = adjusted_dt.date()
+        event_time = adjusted_dt.time()
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Invalid timestamp: {e}"}), 400
+
+    cursor = db.cursor()
+    sql = "INSERT INTO motion_events (mac_address, event_date, event_time) VALUES (%s, %s, %s)"
+    try:
+        cursor.execute(sql, (mac_address, event_date, event_time))
+        db.commit()
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "message": f"Error logging motion event: {err}"}), 500
+
+    return jsonify({"success": True, "message": "Motion event logged successfully"})
+
+# Endpoint zum Aktualisieren der Systeminformationen
+@app.route('/api/system-info', methods=['POST'])
+def update_system_info():
+    data = request.get_json()
+    mac_address = data.get('mac_address')
+    public_ip = data.get('public_ip')
+    wifi_strength = data.get('wifi_strength')
+    serial_number = data.get('serial_number')
+    uptime = data.get('uptime')
+    firmware_version = data.get('firmware_version')
+
+    if not mac_address:
+        return jsonify({"success": False, "message": "MAC address is required"}), 400
+
+    # Aktuelle UTC-Zeit plus 1 Stunde
+    adjusted_dt = datetime.utcnow() + timedelta(hours=1)
+
+    cursor = db.cursor()
+    sql = """
+        INSERT INTO esp_info (mac_address, public_ip, wifi_strength, serial_number, uptime, firmware_version, last_seen)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            public_ip = VALUES(public_ip),
+            wifi_strength = VALUES(wifi_strength),
+            serial_number = VALUES(serial_number),
+            uptime = VALUES(uptime),
+            firmware_version = VALUES(firmware_version),
+            last_seen = %s
+    """
+    try:
+        cursor.execute(sql, (mac_address, public_ip, wifi_strength, serial_number, uptime, firmware_version, adjusted_dt, adjusted_dt))
+        db.commit()
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "message": f"Error updating system info: {err}"}), 500
+
+    return jsonify({"success": True, "message": "System info updated successfully"})
+
+# Endpoint zum Protokollieren von Temperaturdaten
+@app.route('/api/temperature', methods=['POST'])
+def log_temperature():
+    data = request.get_json()
+    app.logger.debug(f"Received temperature data: {data}")
+    device_mac = data.get('mac_address')
+    temperature_celsius = data.get('temperature_celsius')
+
+    if not device_mac or temperature_celsius is None:
+        return jsonify({"success": False, "message": "Missing required fields"}), 400
+
+    # Aktuelle UTC-Zeit plus 1 Stunde
+    adjusted_dt = datetime.utcnow() + timedelta(hours=1)
+    event_date = adjusted_dt.date()
+    event_time = adjusted_dt.time()
+
+    cursor = db.cursor()
+    sql = "INSERT INTO mailbox_temperature (device_mac, date, time, temperature_celsius) VALUES (%s, %s, %s, %s)"
+    try:
+        cursor.execute(sql, (device_mac, event_date, event_time, temperature_celsius))
+        db.commit()
+    except mysql.connector.Error as err:
+        app.logger.error(f"Error logging temperature: {err}")
+        return jsonify({"success": False, "message": f"Error logging temperature: {err}"}), 500
+
+    return jsonify({"success": True, "message": "Temperature logged successfully"})
+
+# Starten des Flask-Servers
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
