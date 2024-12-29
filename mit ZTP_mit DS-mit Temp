@@ -1,0 +1,437 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <ArduinoJson.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <esp_sleep.h>
+
+// ---- WiFiManager-Bibliothek ----
+#include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
+
+// ---------------------------------------------------------
+//   Benutzerdefinierter Dark-Mode-CSS
+// ---------------------------------------------------------
+const char* customCSS = R"(
+<style>
+  body {
+    background-color: #202124;
+    color: #E8EAED;
+    font-family: Roboto, Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+  }
+
+  .wrap {
+    max-width: 400px;
+    background-color: #303134;
+    margin: 40px auto;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 12px rgba(0, 0, 0, 0.3);
+  }
+
+  h2.title {
+    color: #FFFFFF !important;
+    text-align: center;
+    margin-bottom: 20px;
+  }
+
+  .msg {
+    color: #E8EAED !important;
+    margin-bottom: 10px;
+    font-size: 1rem;
+  }
+
+  label {
+    display: block;
+    margin: 10px 0 5px;
+    color: #E8EAED;
+    font-weight: 500;
+  }
+
+  input[type="text"],
+  input[type="password"] {
+    width: 100%;
+    padding: 8px;
+    border: none;
+    border-radius: 4px;
+    background-color: #44474A;
+    color: #E8EAED;
+    box-sizing: border-box;
+    font-size: 0.95rem;
+  }
+
+  input[type="submit"],
+  .button {
+    width: 100%;
+    padding: 10px;
+    background-color: #1A73E8;
+    border: none;
+    border-radius: 4px;
+    color: #FFFFFF;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 15px;
+    font-size: 0.95rem;
+  }
+
+  input[type="submit"]:hover,
+  .button:hover {
+    background-color: #0C5ADB;
+  }
+
+  .info,
+  .paramtable,
+  .msg {
+    color: #E8EAED;
+  }
+
+  a {
+    color: #8AB4F8;
+    text-decoration: none;
+    font-size: 0.95rem;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  .footer {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 0.85rem;
+    color: #9AA0A6;
+  }
+</style>
+)";
+
+// ---------------------------------------------------------
+//   Server-URLs etc.
+// ---------------------------------------------------------
+const char* registrationServerUrl = "http://45.195.250.247:5000/api/register";
+const char* motionServerUrl       = "http://45.195.250.247:5000/api/motion";
+const char* systemInfoUrl         = "http://45.195.250.247:5000/api/system-info";
+const char* temperatureServerUrl  = "http://45.195.250.247:5000/api/temperature";
+
+// GPIO-Pins
+const gpio_num_t pirSensorPin = GPIO_NUM_13;   // PIR-Sensor-Pin (Wake-up-fähig)
+const int ledPin              = 2;             // LED-Pin (On-Board)
+const int oneWireBus          = 4;             // DS18B20 Datenleitung an GPIO 4
+
+// OneWire und DallasTemperature Initialisierung
+OneWire oneWire(oneWireBus);
+DallasTemperature sensors(&oneWire);
+
+// NTP Client
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000); // Aktualisierung alle 60 Sekunden
+
+// Deep Sleep Variablen
+RTC_DATA_ATTR int bootCount = 0;  // Variable, die den Deep Sleep überlebt
+const uint64_t uS_TO_S_FACTOR    = 1000000ULL;
+const uint64_t deepSleepInterval = 15 * 60 * uS_TO_S_FACTOR;  // 15 Minuten in Mikrosekunden
+
+// Status-Variablen
+bool isRegistered   = false;
+bool wifiConnected  = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  // Hochzählung, wie oft der ESP32 aufgewacht ist
+  ++bootCount;
+  Serial.println("Boot number: " + String(bootCount));
+
+  // Grund des Aufwachens ermitteln
+  esp_sleep_wakeup_cause_t wakeupReason = esp_sleep_get_wakeup_cause();
+
+  // Pins initialisieren
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW); // LED aus
+
+  // DS18B20-Sensor starten
+  sensors.begin();
+
+  // ------------- WiFi-Verbindung per WiFiManager -------------
+  WiFi.mode(WIFI_STA);
+  WiFiManager wifiManager;
+
+  // Dark-Mode-CSS einbinden
+  wifiManager.setCustomHeadElement(customCSS);
+
+  // Optional: Titel im Captive Portal ändern
+  wifiManager.setTitle("Modern Dark Config");
+
+  // Falls du einmalig alle alten Credentials löschen möchtest:
+  // wifiManager.resetSettings();
+
+  // Starte das Captive Portal, falls keine korrekten WLAN-Daten gespeichert sind
+  wifiManager.autoConnect("MeinESP32-AP");
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("WLAN verbunden!");
+    Serial.print("IP-Adresse: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("Konnte keine Verbindung zum WLAN herstellen.");
+  }
+
+  // NTP Client starten
+  timeClient.begin();
+  timeClient.update();
+
+  // Gerät registrieren nach erfolgreicher WLAN-Verbindung
+  if (wifiConnected) {
+    registerDevice();
+  }
+
+  // Grund des Wake-ups auswerten
+  switch (wakeupReason) {
+    case ESP_SLEEP_WAKEUP_TIMER:
+      Serial.println("Aufgewacht durch Timer.");
+      sendSystemInfo();
+      sendTemperatureData();
+      break;
+
+    case ESP_SLEEP_WAKEUP_EXT0:
+    case ESP_SLEEP_WAKEUP_EXT1:
+      Serial.println("Aufgewacht durch externes Signal (Bewegung erkannt).");
+      sendMotionEvent();
+      sendSystemInfo();
+      sendTemperatureData();
+      break;
+
+    default:
+      Serial.println("Normaler Start oder unbekannter Wake-up-Grund.");
+      sendSystemInfo();
+      sendTemperatureData();
+      break;
+  }
+
+  // Vorbereitung für den nächsten Deep Sleep
+  prepareDeepSleep();
+}
+
+void loop() {
+  // Nichts zu tun, der ESP32 geht gleich in den Deep Sleep.
+}
+
+// Funktion zur Vorbereitung des Deep Sleep
+void prepareDeepSleep() {
+  // Timer Wake-up in 15 Minuten
+  esp_sleep_enable_timer_wakeup(deepSleepInterval);
+
+  // Wake-up durch Bewegungserkennung (GPIO)
+  esp_sleep_enable_ext0_wakeup(pirSensorPin, 1);
+
+  Serial.println("Gehe in den Deep Sleep-Modus...");
+  Serial.flush();
+  esp_deep_sleep_start();
+}
+
+// Funktion zur Registrierung des Geräts
+void registerDevice() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(registrationServerUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    DynamicJsonDocument doc(256);
+    doc["mac_address"]      = WiFi.macAddress();
+    doc["firmware_version"] = "1.0.0";
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    Serial.println("Sende Registrierung:");
+    Serial.println(requestBody);
+
+    int httpResponseCode = http.POST(requestBody);
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.println("Serverantwort:");
+      Serial.println(response);
+
+      DynamicJsonDocument responseDoc(256);
+      DeserializationError error = deserializeJson(responseDoc, response);
+      if (!error) {
+        bool success = responseDoc["success"];
+        if (success) {
+          Serial.println("Gerät erfolgreich registriert.");
+          isRegistered = true;
+        } else {
+          Serial.println("Geräte-Registrierung fehlgeschlagen.");
+        }
+      } else {
+        Serial.print("Fehler beim Parsen der Serverantwort: ");
+        Serial.println(error.c_str());
+      }
+    } else {
+      Serial.print("HTTP-Anfrage fehlgeschlagen mit Code: ");
+      Serial.println(httpResponseCode);
+      Serial.printf("Fehlerdetails: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("Nicht mit WLAN verbunden.");
+  }
+}
+
+// Funktion zum Senden des Bewegungsevents
+void sendMotionEvent() {
+  if (WiFi.status() != WL_CONNECTED) {
+    // WLAN erneut versuchen
+    WiFiManager wifiManager;
+    wifiManager.setCustomHeadElement(customCSS);
+    wifiManager.setTitle("Modern Dark Config");
+    wifiManager.autoConnect("MeinESP32-AP");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    timeClient.update();
+
+    HTTPClient http;
+    http.begin(motionServerUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    DynamicJsonDocument doc(256);
+    doc["mac_address"] = WiFi.macAddress();
+    doc["timestamp"]   = timeClient.getEpochTime();
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    Serial.println("Sende Bewegungsevent:");
+    Serial.println(requestBody);
+
+    int httpResponseCode = http.POST(requestBody);
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.println("Bewegungsevent gesendet. Serverantwort:");
+      Serial.println(response);
+    } else {
+      Serial.print("Fehler beim Senden des Bewegungsevents. HTTP-Antwortcode: ");
+      Serial.println(httpResponseCode);
+      Serial.printf("Fehlerdetails: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("Nicht mit WLAN verbunden.");
+  }
+}
+
+// Funktion zum Senden der Systeminformationen
+void sendSystemInfo() {
+  if (WiFi.status() != WL_CONNECTED) {
+    // WLAN erneut versuchen
+    WiFiManager wifiManager;
+    wifiManager.setCustomHeadElement(customCSS);
+    wifiManager.setTitle("Modern Dark Config");
+    wifiManager.autoConnect("MeinESP32-AP");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(systemInfoUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    String macAddress      = WiFi.macAddress();
+    String publicIP        = WiFi.localIP().toString();
+    int wifiStrength       = WiFi.RSSI();
+    String firmwareVersion = "1.0.0";
+    unsigned long uptime   = millis() / 1000;
+
+    DynamicJsonDocument doc(256);
+    doc["mac_address"]      = macAddress;
+    doc["public_ip"]        = publicIP;
+    doc["wifi_strength"]    = wifiStrength;
+    doc["serial_number"]    = "SN123456";
+    doc["uptime"]           = uptime;
+    doc["firmware_version"] = firmwareVersion;
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    Serial.println("Sende Systeminformationen:");
+    Serial.println(requestBody);
+
+    int httpResponseCode = http.POST(requestBody);
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.println("Systeminformationen gesendet. Serverantwort:");
+      Serial.println(response);
+    } else {
+      Serial.print("Fehler beim Senden der Systeminformationen. HTTP-Antwortcode: ");
+      Serial.println(httpResponseCode);
+      Serial.printf("Fehlerdetails: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("Nicht mit WLAN verbunden.");
+  }
+}
+
+// Funktion zum Senden der Temperaturdaten
+void sendTemperatureData() {
+  sensors.requestTemperatures();
+  float temperatureC = sensors.getTempCByIndex(0);
+
+  if (temperatureC == DEVICE_DISCONNECTED_C || temperatureC == -127.0) {
+    Serial.println("Fehler: Temperatursensor nicht verbunden oder ungültiger Messwert.");
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    // WLAN erneut versuchen
+    WiFiManager wifiManager;
+    wifiManager.setCustomHeadElement(customCSS);
+    wifiManager.setTitle("Modern Dark Config");
+    wifiManager.autoConnect("MeinESP32-AP");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(temperatureServerUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    DynamicJsonDocument doc(256);
+    doc["mac_address"]         = WiFi.macAddress();
+    doc["temperature_celsius"] = temperatureC;
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    Serial.println("Sende Temperaturdaten:");
+    Serial.println(requestBody);
+
+    int httpResponseCode = http.POST(requestBody);
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpResponseCode);
+
+    if (httpResponseCode == HTTP_CODE_OK) {
+      String response = http.getString();
+      Serial.println("Temperaturdaten gesendet. Serverantwort:");
+      Serial.println(response);
+    } else {
+      Serial.print("Fehler beim Senden der Temperaturdaten. HTTP-Antwortcode: ");
+      Serial.println(httpResponseCode);
+      Serial.printf("Fehlerdetails: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+    http.end();
+  } else {
+    Serial.println("Nicht mit WLAN verbunden.");
+  }
+}
